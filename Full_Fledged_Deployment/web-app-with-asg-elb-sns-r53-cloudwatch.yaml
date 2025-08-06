@@ -1,0 +1,186 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Creating a web app with alb, cloud watch logs, sns, r53, asg and more.
+#Metadata: 
+
+Parameters: 
+  ImageId:
+    Description: Enter t2.micro, m1.small, or m1.large. Default is t2.micro.
+    Type: String
+    Default: ami-08a6efd148b1f7504
+    AllowedValues:
+      - ami-08a6efd148b1f7504
+      - ami-020cba7c55df1f615
+      - ami-0ec18f6103c5e0491
+
+  InstanceType:
+    Description: Enter t2.micro, m1.small, or m1.large. Default is t2.micro.
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - m1.small
+      - m1.large
+
+  LaunchConfigurationName:
+    Description: Enter a name
+    Type: String
+    Default: defaultname
+
+  nameforLB:
+    Description: Enter a name for lb buddy
+    Type: String
+    Default: defaultname
+
+  targetgrpname:
+    Description: Enter da name for da target grp bro
+    Type: String
+    Default: defaultname
+
+  hostedZonenameBruh:
+    Description: Enter yi hostedzone name for ya r53 stuff
+    Type: String
+    Default: defaultname
+
+
+
+Resources: 
+  VaradLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Ref LaunchConfigurationName
+      LaunchTemplateData:
+        ImageId: !Ref ImageId
+        InstanceType: !Ref InstanceType
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y httpd
+            systemctl start httpd
+            systemctl enable httpd
+            echo "<h1>Hello World from $(hostname -f)</h1>" > /var/www/html/index.html
+
+  WebserverAutoscaling:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: VaradASG
+      AvailabilityZones: 
+        - us-east-1a
+        - us-east-1b
+      DesiredCapacity: 2
+      MaxSize: 2
+      MinSize: 1
+      TargetGroupARNs: 
+        - !Ref TargetGroupsforALB
+      VPCZoneIdentifier: 
+        - subnet-0c6a15ff086d89c1e
+        - subnet-0d462c95e13397206
+      LaunchTemplate:
+        LaunchTemplateId: !Ref VaradLaunchTemplate
+        Version: !GetAtt VaradLaunchTemplate.LatestVersionNumber
+
+
+  LoadbalencerForASG:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Name: !Ref nameforLB
+      Subnets: 
+        - subnet-0c6a15ff086d89c1e
+        - subnet-0d462c95e13397206
+      Type: application
+
+
+  ListenerfordaLB:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions: 
+        - TargetGroupArn: !Ref TargetGroupsforALB
+          Type: forward
+      LoadBalancerArn: !Ref LoadbalencerForASG
+      Port: 80
+      Protocol: HTTP
+
+
+  TargetGroupsforALB:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Ref targetgrpname
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: vpc-051a1ce39360d7102
+
+#cloud watch log groups
+  HostedZoneCloudwatchlogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/route53/webapp
+      RetentionInDays: 1
+
+#sns stuff
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: Alerts
+
+
+  SnSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: varadkkps@gmail.com
+      Protocol: email
+      TopicArn: !Ref SNSTopic
+
+#R53 hosted zones
+  MyR53HostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: rahultrisal.com
+      QueryLoggingConfig: 
+          CloudWatchLogsLogGroupArn: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/route53/webapp'
+
+#esourceRecords R53
+  ResourceRecords:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: rahultrisal.com.
+      Name: blog.rahultrisal.com.
+      ResourceRecords: 
+        - !GetAtt LoadbalencerForASG.DNSName
+      TTL: '900'
+      Type: CNAME
+
+
+
+#logpolicy
+  LogsPolicy:
+      Type: AWS::Logs::ResourcePolicy
+      Properties:
+        PolicyName: "LogResourcePolicy"
+        PolicyDocument: !Sub "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"Route53LogsToCloudWatchLogs\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"route53.amazonaws.com\"},\"Action\":[\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"arn:aws:logs:us-east-1:${AWS::AccountId}:log-group:/aws/route53/*\"}]}"
+
+
+#Ze klowd watch alarmzs
+  WebCloudWatchAlarms:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      
+      AlarmActions: 
+        - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:SNSTopic'
+      AlarmDescription: This alarm is triggered when EC2 reaches CPU threshold
+      AlarmName: VaradCWAlarm
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      DatapointsToAlarm: 1
+      MetricName: CPUUtilization
+      Dimensions: 
+        - Name: ASG
+          Value: !Ref WebserverAutoscaling
+      EvaluationPeriods: 1
+      Namespace: AWS/EC2
+      Period: 360
+      Statistic: Maximum
+      Threshold: 2
+      TreatMissingData: breaching
