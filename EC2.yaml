@@ -1,0 +1,132 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description:
+  Script to spin up a fully configured EC2 instance
+
+#Metadata:
+#  template metadata
+
+Parameters:
+  ChooseOSToBoot:
+    Description: Choose which os you want to boot
+    Type: String
+    Default: AmazonLinux2023-6.1
+    AllowedValues:
+      - AmazonLinux2023-6.1
+      - AmazonLinux2023-6.12
+      - MircoSoftWinServer-2025-Base
+      - MircoSoftWinServer-2025-CoreBase
+      - MircoSoftWinServer-2022-Base
+      - MircoSoftWinServer-2022-CoreBase
+      - MircoSoftWinServer-2019-Base
+      - MircoSoftWinServer-2019-CoreBase
+      - MircoSoftWinServer-2016-Base
+      - MircoSoftWinServer-2016-CoreBase
+      - UbuntuServer24.04-LTS(1)
+      - UbuntuServer24.04-LTS(2)
+      - RedhatEnterpriseLinux-10
+      - RedhatEnterpriseLinux-9
+      - SEUSLinuxEnterpriseServer-15-SP7
+      - SEUSLinuxEnterpriseServer-12-SP5
+      - Debian-12
+
+  ChooseInstanceType:
+    Description: Choose which instance type you want
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t4g.nano
+      - t4g.micro
+      - t3a.nano
+      - t3a.micro
+      - t2.micro
+      - t3.micro
+
+  ChooseSubnet:
+    Description: Choose a subnet you want to assign
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - 1a
+      - 1b
+      - 1c
+      - 1d
+      - 1e
+      - 1f
+
+Mappings:
+  ChooseOSMap:
+    AmazonLinux2023-6.1:
+      AMI: ami-084a7d336e816906b
+    AmazonLinux2023-6.12:
+      AMI: ami-0263dd5562cf9d185
+    MircoSoftWinServer-2025-Base:
+      AMI: ami-0c9fb5d338f1eec43
+    MircoSoftWinServer-2025-CoreBase:
+      AMI: ami-0a643ff39fabd8fe9
+    MircoSoftWinServer-2022-Base:
+      AMI: ami-0758218dcb57e4a14
+    MircoSoftWinServer-2022-CoreBase:
+      AMI: ami-0dcf8128496168525
+    MircoSoftWinServer-2019-Base:
+      AMI: ami-0623bc4c9a53fe562
+    MircoSoftWinServer-2019-CoreBase:
+      AMI: ami-0fe47ded0ea93b33d
+    MircoSoftWinServer-2016-Base:
+      AMI: ami-0585184f0cbc71d00
+    MircoSoftWinServer-2016-CoreBase:
+      AMI: ami-02b60df36308b4147
+    UbuntuServer24.04-LTS(1):
+      AMI: ami-020cba7c55df1f615
+    UbuntuServer24.04-LTS(2):
+      AMI: ami-0a7d80731ae1b2435
+    RedhatEnterpriseLinux-10:
+      AMI: ami-0ec18f6103c5e0491
+    RedhatEnterpriseLinux-9:
+      AMI: ami-0dfc569a8686b9320
+    SEUSLinuxEnterpriseServer-15-SP7:
+      AMI: ami-06528c11a66cef7a8
+    SEUSLinuxEnterpriseServer-12-SP5:
+      AMI: ami-07122687544266da7
+    Debian-12:
+      AMI: ami-0779caf41f9ba54f0
+
+  ChooseSubnetMap:
+    1a:
+      subnet: 
+    1b:
+      subnet: 
+    1c:
+      subnet: 
+    1d:
+      subnet: 
+    1e:
+      subnet: 
+    1f:
+      subnet: 
+
+
+Resources:
+  Type: AWS::EC2::Instance
+  Properties:
+    ImageId: !FindInMap
+      - ChooseOSMap
+      - !Ref ChooseOSToBoot
+      - AMI
+    InstanceType: !Ref ChooseInstanceType
+    SubnetId: !Ref ChooseSubnet
+    Tags: 
+      - Key : Name
+        Value : "EC2-${ChooseOSToBoot}"
+    UserData: 
+      Fn::Base64: !Sub |
+          #!/bin/bash
+          # Use this for your user data (script from top to bottom)
+          # install httpd (Linux 2 version)
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "<h1>Hello World from $(hostname -f)</h1>" > /var/www/html/index.html
+                    
