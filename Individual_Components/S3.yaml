@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >
+  Script to spin up a fully configured S3 bucket with optional object lock, versioning, encryption, and tagging.
+
+Parameters:
+  EnterName:
+    Description: Input name for your S3 bucket
+    Type: String
+
+  ChooseVersionConfigOnOrOff:
+    Description: Enable or suspend versioning
+    Type: String
+    Default: Suspended
+    AllowedValues:
+      - Enabled
+      - Suspended
+
+  ChooseBooleanForObjectLock:
+    Description: Enable Object Lock for the bucket (true/false)
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - true
+      - false
+
+  ObjectLockMode:
+    Description: Choose Compliance or Governance mode of retention
+    Type: String
+    Default: GOVERNANCE
+    AllowedValues:
+      - COMPLIANCE
+      - GOVERNANCE
+
+  RetentionType:
+    Description: Retention unit (Days or Years)
+    Type: String
+    Default: "Days"
+    AllowedValues:
+      - Days
+      - Years
+
+  RetentionValue:
+    Description: Retention value in days or years
+    Type: Number
+    Default: 1
+    MinValue: 1
+
+  BucketTagName:
+    Description: Department tag value
+    Type: String
+
+  BucketTypeName:
+    Description: Environment tag value (e.g., prod/dev)
+    Type: String
+
+Conditions:
+  ChoseRetentionInDays: !Equals [!Ref RetentionType, "Days"]
+  ChoseRetentionInYears: !Equals [!Ref RetentionType, "Years"]
+  HasName: !Not [!Equals [!Ref EnterName, ""]]
+  EnableObjectLock: !Equals [!Ref ChooseBooleanForObjectLock, "true"]
+
+Resources:
+  MyS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If [HasName, !Ref EnterName, !Sub "my-default-bucket-${AWS::AccountId}-${AWS::Region}"]
+      VersioningConfiguration:
+        Status: !If [EnableObjectLock, Enabled, !Ref ChooseVersionConfigOnOrOff]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Name
+          Value: !Ref BucketTagName
+        - Key: Type
+          Value: !Ref BucketTypeName
+      ObjectLockEnabled: !If [EnableObjectLock, true, !Ref "AWS::NoValue"]
+      ObjectLockConfiguration: !If
+        - EnableObjectLock
+        - Rule:
+            DefaultRetention: 
+              Mode: !Ref ObjectLockMode
+              Days: !If [ChoseRetentionInDays, !Ref RetentionValue, !Ref "AWS::NoValue"]
+              Years: !If [ChoseRetentionInYears, !Ref RetentionValue, !Ref "AWS::NoValue"]
+        - !Ref "AWS::NoValue"
+      
+
+Outputs:
+  OutputLogicalID:
+    Description: Created bucket name
+    Value: !Ref MyS3Bucket
+
+  ObjectLockStatus:
+    Description: Whether object lock is enabled
+    Value: !Ref ChooseBooleanForObjectLock
+
+  RetentionApplied:
+    Description: Retention period as string
+    Value: !Sub "${RetentionValue} ${RetentionType}"
