@@ -1,0 +1,683 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  HA, Highly-resilient, fault-tolerant, loosely-coupled infra for IoT ingestion,
+  cleaning, minimal storage, failure-detection, instant notifications, and periodic insights.
+  Single-account, multi-AZ design. Replace inline lambda code with your production code.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: iot-demo
+    Description: Environment name prefix
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+  PublicSubnetCidr1:
+    Type: String
+    Default: 10.0.0.0/24
+  PublicSubnetCidr2:
+    Type: String
+    Default: 10.0.1.0/24
+  PrivateSubnetCidr1:
+    Type: String
+    Default: 10.0.10.0/24
+  PrivateSubnetCidr2:
+    Type: String
+    Default: 10.0.11.0/24
+  AllowedAdminCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR that can access admin endpoints (keep tight in prod)
+  SupportEmail:
+    Type: String
+    Description: Support team email that will receive SNS notifications
+  LambdaRuntime:
+    Type: String
+    Default: python3.11
+    AllowedValues:
+      - python3.8
+      - python3.9
+      - python3.10
+      - python3.11
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      S3Endpoint: com.amazonaws.us-east-1.s3
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-igw'
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCidr1
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-a'
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCidr2
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-b'
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetCidr1
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-private-a'
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetCidr2
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-private-b'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-rt'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  NatEIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatEIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP1.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-nat-a'
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP2.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-nat-b'
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-private-rt-a'
+
+  PrivateRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-private-rt-b'
+
+  PrivateRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  VPCEndpointS3:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      RouteTableIds:
+        - !Ref PublicRouteTable
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
+      VpcEndpointType: Gateway
+
+  VPCEndpointDynamoDB:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+      RouteTableIds:
+        - !Ref PublicRouteTable
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
+      VpcEndpointType: Gateway
+
+  VPCEndpointSQS:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sqs'
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: []
+
+  VPCEndpointSNS:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sns'
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: []
+
+  VPCEndpointSecretsManager:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: []
+
+  VPCEndpointCloudWatchLogs:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: []
+
+  DataKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "KMS key for ${EnvironmentName} data encryption"
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Allow administration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+      EnableKeyRotation: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-data-key'
+
+  CleanedDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref DataKmsKey
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old
+            Status: Enabled
+            Prefix: archived/
+            ExpirationInDays: 365
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-cleaned-data'
+
+  IoTRecordsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${EnvironmentName}-iot-records'
+      AttributeDefinitions:
+        - AttributeName: deviceId
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: deviceId
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        KMSMasterKeyId: !Ref DataKmsKey
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-iot-records'
+
+  IngestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${EnvironmentName}-ingest-queue'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600  # 14 days
+      KmsMasterKeyId: !Ref DataKmsKey
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-ingest-queue'
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${EnvironmentName}-alerts'
+      DisplayName: !Sub '${EnvironmentName}-alerts'
+      KmsMasterKeyId: !Ref DataKmsKey
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref SupportEmail
+
+  WebhookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${EnvironmentName}/support/webhook'
+      Description: 'Webhook/credential for support integration'
+      KmsKeyId: !Ref DataKmsKey
+      SecretString: !Sub '{"webhook_url":"https://example.invalid/webhook"}'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-webhook-secret'
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-lambda-exec-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: MinimalLambdaPolicies
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowS3
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${CleanedDataBucket.Arn}'
+                  - !Sub '${CleanedDataBucket.Arn}/*'
+              - Sid: AllowDynamo
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource: !GetAtt IoTRecordsTable.Arn
+              - Sid: AllowSQS
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt IngestQueue.Arn
+              - Sid: AllowSNS
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AlertTopic
+              - Sid: AllowSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref WebhookSecret
+              - Sid: AllowKmsDecrypt
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !Ref DataKmsKey
+              - Sid: AllowCloudWatchPut
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  IoTRuleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-iot-rule-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - iot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: IoTRuleToSqs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt IngestQueue.Arn
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda security group (allows outbound)
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-lambda-sg'
+
+  ProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-processor'
+      Handler: index.handler
+      Runtime: !Ref LambdaRuntime
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          CLEAN_BUCKET: !Ref CleanedDataBucket
+          DDB_TABLE: !Ref IoTRecordsTable
+          ALERT_TOPIC: !Ref AlertTopic
+      Code:
+        ZipFile: |
+          import json, os, base64
+          import boto3
+          s3 = boto3.client('s3')
+          ddb = boto3.client('dynamodb')
+          sns = boto3.client('sns')
+          def handler(event, context):
+              # SQS -> records
+              for rec in event.get('Records', []):
+                  body = rec.get('body')
+                  try:
+                      payload = json.loads(body)
+                  except Exception:
+                      payload = {'raw': body}
+                  # Basic cleaning example: pick minimal fields
+                  device_id = payload.get('deviceId', 'unknown')
+                  ts = payload.get('timestamp') or payload.get('ts') or str(context.aws_request_id)
+                  minimal = {
+                      'deviceId': {'S': str(device_id)},
+                      'timestamp': {'S': str(ts)},
+                      'status': {'S': payload.get('status','ok')},
+                  }
+                  # Example failure detection
+                  if payload.get('status') == 'failed' or payload.get('temp',0)>100:
+                      # publish alert
+                      sns.publish(
+                          TopicArn=os.environ['ALERT_TOPIC'],
+                          Message=json.dumps({'device':device_id,'reason':'detected failure','payload':payload}),
+                          Subject='IoT Device Failure Detected'
+                      )
+                  # store minimal
+                  ddb.put_item(TableName=os.environ['DDB_TABLE'], Item=minimal)
+                  # archive cleaned payload to s3 for periodic ML
+                  s3.put_object(Bucket=os.environ['CLEAN_BUCKET'], Key=f"archived/{device_id}/{ts}.json", Body=json.dumps(payload))
+              return {'status':'ok'}
+
+  ProcessorEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt IngestQueue.Arn
+      FunctionName: !GetAtt ProcessorFunction.Arn
+      MaximumRetryAttempts: 2
+
+  IoTRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: !Sub '${EnvironmentName}-rule'
+      TopicRulePayload:
+        Sql: "SELECT * FROM 'devices/+/telemetry'"
+        Actions:
+          - Sqs:
+              RoleArn: !GetAtt IoTRuleRole.Arn
+              QueueUrl: !Ref IngestQueue
+        RuleDisabled: false
+        AwsIotSqlVersion: '2016-03-23'
+
+  InsightsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-insights'
+      Handler: index.handler
+      Runtime: !Ref LambdaRuntime
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: 1024
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          CLEAN_BUCKET: !Ref CleanedDataBucket
+          ALERT_TOPIC: !Ref AlertTopic
+      Code:
+        ZipFile: |
+          import json, os, boto3
+          s3 = boto3.client('s3')
+          sns = boto3.client('sns')
+          def handler(event, context):
+              # Placeholder: read sample objects, compute trivial metric + publish
+              try:
+                  resp = s3.list_objects_v2(Bucket=os.environ['CLEAN_BUCKET'], Prefix='archived/', MaxKeys=50)
+                  count = resp.get('KeyCount',0)
+                  metric = {'insight':'recent_archive_count','value':count}
+                  sns.publish(TopicArn=os.environ['ALERT_TOPIC'], Message=json.dumps(metric), Subject='Daily Insights')
+              except Exception as e:
+                  sns.publish(TopicArn=os.environ['ALERT_TOPIC'], Message='Insights job failed: '+str(e), Subject='Insights Failure')
+
+  InsightsScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${EnvironmentName}-insights-schedule'
+      ScheduleExpression: 'rate(24 hours)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt InsightsFunction.Arn
+          Id: InsightsLambdaTarget
+
+  PermissionForEventsToInvokeInsights:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt InsightsFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt InsightsScheduleRule.Arn
+
+  IngestQueueAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-IngestQueue-Alarm'
+      AlarmDescription: 'Alarm if there are more than 100 visible messages in ingest queue'
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt IngestQueue.QueueName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+
+  ProcessorErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-ProcessorErrors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !GetAtt ProcessorFunction.FunctionName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+
+  IoTPolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: !Sub '${EnvironmentName}-device-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - iot:Publish
+            Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/devices/*/telemetry'
+
+Outputs:
+  VpcId:
+    Description: VPC Id
+    Value: !Ref VPC
+  IngestQueueUrl:
+    Description: Ingest SQS Queue URL
+    Value: !Ref IngestQueue
+  AlertTopicArn:
+    Description: SNS topic ARN for alerts
+    Value: !Ref AlertTopic
+  CleanedBucketName:
+    Description: S3 bucket for cleaned data
+    Value: !Ref CleanedDataBucket
+  IoTRuleName:
+    Description: IoT Rule name to which devices should publish (topic devices/<deviceId>/telemetry)
+    Value: !Ref IoTRule
+  DynamoDBTable:
+    Description: DynamoDB table storing minimal required device data
+    Value: !Ref IoTRecordsTable
+
+Metadata:
+  AWS::CloudFormation::Designer: {}
+
