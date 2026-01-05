@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: S3 static html website hosting through IaC
+# Resources section
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "static-site-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Name
+          Value: testbucketdelete
+
+      #having this section by defaults means that static website hosting on s3 is enabled    
+      WebsiteConfiguration: 
+        ErrorDocument: error.html
+        IndexDocument: index.html
+        RoutingRules:
+          - RoutingRuleCondition:
+              HttpErrorCodeReturnedEquals: '404'
+              KeyPrefixEquals: index.html
+            RedirectRule:
+              HostName: <host-name>
+              ReplaceKeyWith: report-404.html
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadAccess
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${S3Bucket.Arn}/*"
+
+Outputs:
+  WebsiteURL:
+    Description: S3 static website URL
+    Value: !GetAtt S3Bucket.WebsiteURL
+
