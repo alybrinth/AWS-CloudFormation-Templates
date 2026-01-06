@@ -1,1 +1,42 @@
 
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description:
+  CF template for creating an IAM user as a part of an IAM group. 
+
+Mappings:
+  set of mappings
+
+Conditions:
+  set of conditions
+
+Resources:
+  MyIAMUser:
+    Type: AWS::IAM::User
+    Properties:
+      Groups: 
+        - Ec2Operator
+      LoginProfile: 
+        Password: <redacted>
+        PasswordResetRequired: false
+      Policies: 
+        - PolicyName: Ec2ReadOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:Describe*
+                Resource: "*"
+      Tags: 
+        - Key: Project
+          Value: Demo
+      UserName: Ec2Operator1
+
+  MyIAMGroup:
+    
+
+
+Outputs:
+  set of outputs
